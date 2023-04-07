@@ -5,6 +5,7 @@ from   src.telegram_bot import SdTgBot
 import logging
 import gradio as gr
 import yaml
+import importlib
 
 bot_instance = None
 LOGGER = logging.getLogger(__name__)
@@ -16,7 +17,8 @@ LOGGER.addHandler(sout_h)
 
 DEFAULT = {
     'telegram_bot_invalid_prompt_msg' : "Invalid prompt",
-    'telegram_bot_generated_msg' : 'Generated!',
+    'telegram_bot_generated_msg' : 'Generated!\n'
+                                   '{gen_data}',
     'telegram_bot_generated_error_msg' : 'Error generating :(',
     'telegram_bot_start_msg' : 'Hello, i am Stable Diffusion bot',
     'telegram_bot_help_msg' : 'Some help',
@@ -29,7 +31,12 @@ DEFAULT = {
     'telegram_bot_img2img_default_prompt': 'anime',
     'telegram_bot_commands': ["start", "help", "text2img", "img2img"],
     'telegram_bot_steps' : 35, 
-
+    'telegram_bot_sampler' : 'Euler a', 
+    'telegram_bot_img2img_controlnet' : False,
+    'telegram_bot_comment_send' : False,
+    'telegram_bot_img2img_controlnet_processor_res' : 512,
+    'telegram_bot_img2img_controlnet_threshold_a' : 100,
+    'telegram_bot_img2img_controlnet_threshold_b' : 200,
 
     'telegram_bot_img2img_cmd': "img2img",
     'telegram_bot_text2img_cmd': "text2img",
@@ -151,6 +158,14 @@ def on_ui_settings():
                                              gr.Text, 
                                              section=section))
     
+    samplers  = [x.name for x in shared.list_samplers()]
+    shared.opts.add_option("telegram_bot_sampler", 
+                           shared.OptionInfo(samplers[0], 
+                                             "Sampler", 
+                                             gr.Dropdown,
+                                             component_args={"choices": samplers},
+                                             section=section))
+    
     shared.opts.add_option("telegram_bot_steps", 
                            shared.OptionInfo(35, 
                                              "Steps", 
@@ -181,11 +196,64 @@ def on_ui_settings():
     
     shared.opts.add_option("telegram_bot_img2img_denoising", 
                            shared.OptionInfo(0.68, 
-                                             "Image2image denoising strenght", 
+                                             "Image2image denoising strengh", 
                                              gr.Slider,
                                              component_args={'maximum':1}, 
-                                             section=section))
+                                             section=section))    
+
+    shared.opts.add_option("telegram_bot_comment_send", 
+                           shared.OptionInfo(False, 
+                                             "Add generation data to imgs", 
+                                             gr.Checkbox, 
+                                             section=section))                                    
     
+    try:
+        external_code = importlib.import_module('extensions.sd-webui-controlnet.scripts.external_code', 'external_code')
+        shared.opts.add_option("telegram_bot_img2img_controlnet", 
+                           shared.OptionInfo(False, 
+                                             "Use controlnet for img2img", 
+                                             gr.Checkbox, 
+                                             section=section))
+        models = external_code.get_models()
+        modules = external_code.get_modules()
+        shared.opts.add_option("telegram_bot_img2img_controlnet_model", 
+                           shared.OptionInfo(models[0], 
+                                             "Controlnet model", 
+                                             gr.Dropdown,
+                                             component_args={"choices": models},
+                                             section=section))
+        
+        shared.opts.add_option("telegram_bot_img2img_controlnet_module", 
+                           shared.OptionInfo(modules[0], 
+                                             "Controlnet module", 
+                                             gr.Dropdown,
+                                             component_args={"choices": modules},
+                                             section=section))
+        
+        shared.opts.add_option("telegram_bot_img2img_controlnet_processor_res", 
+                           shared.OptionInfo(512, 
+                                             "Controlnet annotator resolution", 
+                                             gr.Slider,
+                                             component_args={'maximum':2048, 'step':1}, 
+                                             section=section))    
+        
+        shared.opts.add_option("telegram_bot_img2img_controlnet_threshold_a", 
+                           shared.OptionInfo(100, 
+                                             "Controlnet threshold a (Canny low threshold)", 
+                                             gr.Slider,
+                                             component_args={'maximum':255, 'step' :1}, 
+                                             section=section))    
+
+        shared.opts.add_option("telegram_bot_img2img_controlnet_threshold_b", 
+                           shared.OptionInfo(200, 
+                                             "Controlnet threshold b (Canny hight threshold)", 
+                                             gr.Slider,
+                                             component_args={'maximum':255, 'step' :1}, 
+                                             section=section))    
+    except:
+        pass
+        
+
     shared.opts.add_option("telegram_bot_cmds", 
                            shared.OptionInfo('', 
                                              "Slash command names overrides (yml, key-value)", 
@@ -199,6 +267,7 @@ def on_ui_settings():
                                              onchange=main.on_change_settings))
 
 def on_app_started(block, api):
+    stop_bot()
     create_bot()
     start_bot()
 

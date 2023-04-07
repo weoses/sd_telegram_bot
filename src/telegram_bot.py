@@ -6,10 +6,13 @@ from telebot import TeleBot
 from telebot import types
 import logging
 import pathlib
-from modules import call_queue, shared, sd_samplers
+import numpy
+from modules import call_queue, shared, sd_samplers, scripts
 from modules.processing import StableDiffusionProcessing, Processed, StableDiffusionProcessingTxt2Img, \
     StableDiffusionProcessingImg2Img, process_images
 from modules import txt2img
+
+import importlib
 from PIL import Image
 from src import main, utils
 
@@ -56,12 +59,21 @@ class SdTgBot:
                 chat_id=waiting.chat.id,
                 caption=main.get_msg('telegram_bot_waiting_progress_msg', progress=progress, eta=eta))
     
-    def __finish_waiting(self, waiting:types.Message, supports_read_img):
+    def __finish_waiting(self, waiting:types.Message, supports_read_img, comment_data):
+        msg = main.get_msg('telegram_bot_generated_msg', gen_data = comment_data)
+        msg_send = msg
+        msg_post = ''
+        if len(msg) > 1024:
+            msg_send = msg[:1023]
+            msg_post = msg[1023:]
+        
         self.bot.edit_message_media(
             message_id=waiting.message_id,
             chat_id=waiting.chat.id,
             media=types.InputMediaPhoto(supports_read_img, 
-                                        caption=main.get_msg('telegram_bot_generated_msg')))
+                                        caption=msg_send) )
+        if msg_post:
+            self.bot.send_message(chat_id=waiting.chat.id, text=msg_post)
         
     def __error_waiting(self, waiting:types.Message):
         self.bot.edit_message_media(
@@ -86,7 +98,9 @@ class SdTgBot:
             nonlocal processed
             shared.state.begin()
             try:
-                processed = process_images(p)            
+                processed = scripts.scripts_img2img.run(p, *p.script_args)
+                if processed is None:
+                    processed = process_images(p)
             finally:
                 shared.state.end()
         
@@ -118,6 +132,35 @@ class SdTgBot:
             if not img and msg_old.document:
                 img = message.document.file_id
         return img
+
+    def __fill_args(self, p: StableDiffusionProcessing):
+        last_arg_index = 1
+        for script in p.scripts.scripts:
+            if last_arg_index < script.args_to:
+                last_arg_index = script.args_to
+        p.script_args = [None] * last_arg_index
+        p.script_args[0] = 0
+
+
+    def __controlnet_args(self, p: StableDiffusionProcessing, image:Image):
+        try:
+            external_code = importlib.import_module('extensions.sd-webui-controlnet.scripts.external_code', 'external_code')
+            units = [
+                external_code.ControlNetUnit(
+                    model=main.get_conf('telegram_bot_img2img_controlnet_model'),
+                    module=main.get_conf('telegram_bot_img2img_controlnet_module'),
+                    processor_res=main.get_conf('telegram_bot_img2img_controlnet_processor_res'),
+                    threshold_a=main.get_conf('telegram_bot_img2img_controlnet_threshold_a'),
+                    threshold_b=main.get_conf('telegram_bot_img2img_controlnet_threshold_b'),
+                    guess_mode=False,
+                    image={'image': numpy.array(image), 'mask' : None}
+                )
+            ]
+
+            external_code.update_cn_script_in_processing(p, units)
+        except:
+            pass
+
 
     def filter_msgs(self, msg:types.Message):
         auth_chats = main.get_conf('telegram_bot_autorized_chats')
@@ -188,12 +231,19 @@ class SdTgBot:
                 resize_mode=2,
                 prompt=prompt,
                 negative_prompt=main.get_conf('telegram_bot_negative_prompt'),
-                sampler_name=sd_samplers.samplers[0].name,
+                sampler_name=main.get_conf('telegram_bot_sampler'),
                 steps=int(main.get_conf('telegram_bot_steps')),
                 cfg_scale=main.get_conf('telegram_bot_cfg_scale'),
-                width=int(main.get_conf('telegram_bot_img_width')),
-                height=int(main.get_conf('telegram_bot_img_height'))
-            )
+                width=need_sizes[0],
+                height=need_sizes[1])
+            
+
+            p.scripts = scripts.scripts_img2img
+            self.__fill_args(p)
+            
+            if main.get_conf('telegram_bot_img2img_controlnet'):
+                self.__controlnet_args(p, img_pil)
+
             waiting = self.__send_waiting(incoming=message)
 
             res = self.__gen_processing(
@@ -212,7 +262,12 @@ class SdTgBot:
             output_data = io.BytesIO()
             img.save(output_data, format='jpeg')
             output_data.seek(0)
-            self.__finish_waiting(waiting, output_data)
+
+            gen_comment = ''
+            if main.get_conf('telegram_bot_comment_send'):
+                gen_comment = res.infotext(p, 0)
+
+            self.__finish_waiting(waiting, output_data, gen_comment)
 
         call_queue.wrap_queued_call(generate_call)()
            
@@ -230,12 +285,15 @@ class SdTgBot:
                 prompt=prompt,
                 negative_prompt=main.get_conf('telegram_bot_negative_prompt'),
                 seed=-1,
-                sampler_name=sd_samplers.samplers[0].name,
+                sampler_name=main.get_conf('telegram_bot_sampler'),
                 steps=int(main.get_conf('telegram_bot_steps')),
                 cfg_scale=main.get_conf('telegram_bot_cfg_scale'),
                 width=int(main.get_conf('telegram_bot_img_width')),
                 height=int(main.get_conf('telegram_bot_img_height')),
             )
+
+            p.scripts = scripts.scripts_txt2img
+            self.__fill_args(p)
             
             waiting = self.__send_waiting(incoming=message)
 
@@ -255,7 +313,12 @@ class SdTgBot:
             output_data = io.BytesIO()
             img.save(output_data, format='jpeg')
             output_data.seek(0)
-            self.__finish_waiting(waiting, output_data)
+            
+            gen_comment = ''
+            if main.get_conf('telegram_bot_comment_send'):
+                gen_comment = res.infotext(p, 0)
+
+            self.__finish_waiting(waiting, output_data, gen_comment)
 
         call_queue.wrap_queued_call(generate_call)()
 
