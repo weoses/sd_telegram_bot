@@ -2,8 +2,8 @@ import io
 import os
 import threading
 import time
-from telebot import TeleBot
 from telebot import types
+import telebot
 import logging
 import pathlib
 import numpy
@@ -11,7 +11,7 @@ from modules import call_queue, shared, sd_samplers, scripts
 from modules.processing import StableDiffusionProcessing, Processed, StableDiffusionProcessingTxt2Img, \
     StableDiffusionProcessingImg2Img, process_images
 from modules import txt2img
-
+from telebot import util
 import importlib
 from PIL import Image
 from src import main, utils
@@ -24,16 +24,13 @@ sout_h.setLevel(level=logging.DEBUG)
 LOGGER.addHandler(sout_h)
 
 opts = shared.opts
-waiting_image_id = None
 
 class SdTgBot:
-    __slots__ = ('bot', 'running')
+    __slots__ = ('bot', 'running', 'waiting_image_id')
 
     def __send_waiting(self, incoming:types.Message):
-        global waiting_image_id
-
         sent_msg = None
-        if not waiting_image_id:
+        if not self.waiting_image_id:
             loading = pathlib.Path(__file__) # ../../res/loading.png
             loading = pathlib.Path(loading.parent.parent, 'res', 'loading.png')
             with open(str(loading), "rb") as ph:
@@ -43,10 +40,10 @@ class SdTgBot:
                     reply_to_message_id=incoming.id,
                     caption=main.get_msg("telegram_bot_waiting_msg"))
                 if sent_msg.photo:
-                    waiting_image_id = sent_msg.photo[0].file_id
+                    self.waiting_image_id = sent_msg.photo[0].file_id
         else:
             sent_msg = self.bot.send_photo(
-                photo=waiting_image_id, 
+                photo=self.waiting_image_id, 
                 chat_id=incoming.chat.id, 
                 reply_to_message_id=incoming.id,
                 caption=main.get_msg("telegram_bot_waiting_msg"))
@@ -141,7 +138,6 @@ class SdTgBot:
         p.script_args = [None] * last_arg_index
         p.script_args[0] = 0
 
-
     def __controlnet_args(self, p: StableDiffusionProcessing, image:Image):
         try:
             external_code = importlib.import_module('extensions.sd-webui-controlnet.scripts.external_code', 'external_code')
@@ -160,7 +156,6 @@ class SdTgBot:
             external_code.update_cn_script_in_processing(p, units)
         except:
             pass
-
 
     def filter_msgs(self, msg:types.Message):
         auth_chats = main.get_conf('telegram_bot_autorized_chats')
@@ -346,26 +341,30 @@ class SdTgBot:
                                 and x.text 
                                 and x.text.startswith(img2img_filter) )
     
-    def start(self):
+    def run(self):
+        if self.running:
+            raise Exception('Bot already running')
         
+        self.running = True
         while True:
-            time.sleep(3) # TODO wait for polling stops
+            if not self.running:
+                return
+            time.sleep(1)
             try:
-                self.running = True
-                self.bot.polling()
+                # print("==== START POLLING")
+                self.bot.polling(logger_level=logging.INFO)
             except Exception as e:
                 LOGGER.warning("Telegram polling error - %s", e)
-    
             if not self.running:
                 return
 
-
     def stop(self):
         self.running = False
-        self.bot.stop_polling()
-
+        self.bot.stop_bot()
+        
     def __init__(self, token:str) -> None:
-        self.bot = TeleBot(token=token)
+        self.bot = telebot.TeleBot(token=token)
+        #telebot.logger.setLevel(level=logging.INFO)
         self.running = False
         self.init_msgs()
 

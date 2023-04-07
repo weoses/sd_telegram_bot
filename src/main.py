@@ -1,13 +1,15 @@
 from io import StringIO
 import threading
+import time
 from modules import shared, devices, script_callbacks, processing, masking, images
 from   src.telegram_bot import SdTgBot
 import logging
 import gradio as gr
 import yaml
 import importlib
+import telebot
 
-bot_instance = None
+
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(level=logging.DEBUG)
 
@@ -43,51 +45,64 @@ DEFAULT = {
 }
 
 
+
 overrides_msgs_obj = None
 overrides_cmds_obj = None
+restart_bot_event = threading.Event()
+bot_instance = None
+bot_thread = None
 
-def create_bot():
+def create_bot_thread():
+    global bot_thread
     global bot_instance
-    try:
-        update_overrides()
-        token = shared.opts.data.get("telegram_bot_token")
-        LOGGER.debug(f'Creating telegram bot')
+    
+    if bot_thread:
+        return
+    
+    def th():
+        bot_finished = threading.Event()
+        while True:
+            try:            
+                def start_bot():
+                    global bot_instance
+                    try:
+                        bot_finished.clear()     
+                        update_overrides()
+                        token = shared.opts.data.get("telegram_bot_token")
+                        LOGGER.debug(f'Creating telegram bot')
 
-        if token:
-            bot_instance = SdTgBot(token=token)
-        else :
-            bot_instance = None
-    except Exception as e:
-        LOGGER.exception("Cant create telegram bot %s", e)        
-
-def stop_bot():
-    try:
-        global bot_instance
-        if bot_instance:
-            LOGGER.debug(f'Stop telegram bot')
-            bot_instance.stop()
-    except Exception as e:
-        LOGGER.exception("Cant stop telegram bot %s", e)
-
-def start_bot():
-    try:
-        global bot_instance
-        if bot_instance:
-            LOGGER.info(f'Start telegram bot')
-
-            def safe_start():
-                try:
-                    bot_instance.start()
-                except Exception as e:
-                    LOGGER.exception("Cant start telegram bot:  %s", e)       
-                     
+                        if token:
+                            bot_instance = SdTgBot(token=token)
+                        else:
+                            bot_instance = None
+                            bot_finished.set()
+                            return
                     
-            th = threading.Thread(target=safe_start) 
-            th.daemon = True
-            th.start()
-    except Exception as e:
-        LOGGER.exception("Cant start telegram bot:  %s", e)
+                        LOGGER.info(f'Start telegram bot')
+                        bot_instance.run()
+                        bot_finished.set()
+                    except Exception as e:
+                        LOGGER.exception("Bot run exception %s", e)
+                
+                start_th = threading.Thread(target=start_bot)
+                start_th.daemon = True
+                start_th.start()
+                
+                restart_bot_event.wait()
 
+                if bot_instance != None:
+                    LOGGER.debug(f'Stop telegram bot')
+                    bot_instance.stop()
+                    bot_finished.wait()
+
+                restart_bot_event.clear()
+            except Exception as  e:
+                LOGGER.exception("TelegramBot error: %s", e)
+
+    bot_thread = threading.Thread(target=th)
+    bot_thread.daemon = True
+    bot_thread.start()
+        
 def update_overrides():
     global overrides_msgs_obj
     global overrides_cmds_obj
@@ -110,12 +125,7 @@ def update_overrides():
 
 def on_change_settings():
     '''Change settings callback. Restart bot, reload messanges overrides'''
-    try:
-        stop_bot()
-        create_bot()
-        start_bot()
-    except Exception as e:
-        LOGGER.exception("Cant restart telegram bot %s", e)
+    restart_bot_event.set()
 
 def on_ui_settings():
     """ Ui create function """
@@ -267,9 +277,7 @@ def on_ui_settings():
                                              onchange=main.on_change_settings))
 
 def on_app_started(block, api):
-    stop_bot()
-    create_bot()
-    start_bot()
+    create_bot_thread()
 
 def load():
     script_callbacks.on_ui_settings(on_ui_settings)
