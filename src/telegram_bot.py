@@ -1,5 +1,4 @@
 import io
-import os
 import threading
 import time
 from telebot import types
@@ -10,8 +9,6 @@ import numpy
 from modules import call_queue, shared, sd_samplers, scripts
 from modules.processing import StableDiffusionProcessing, Processed, StableDiffusionProcessingTxt2Img, \
     StableDiffusionProcessingImg2Img, process_images
-from modules import txt2img
-from telebot import util
 import importlib
 from PIL import Image
 from src import main, utils

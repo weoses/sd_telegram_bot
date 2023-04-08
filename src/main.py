@@ -7,7 +7,7 @@ import logging
 import gradio as gr
 import yaml
 import importlib
-import telebot
+
 
 
 LOGGER = logging.getLogger(__name__)
